@@ -35,20 +35,13 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 
-# ---- make project root importable ----
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "../../../"))
 import sys
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-# ---- reuse your LinUCB & build_x ----
 from core.linucb_selector import GlobalLinUCB, build_x
-
-
-# -----------------------------
-# 1) Data model (reuse from Exp1, but add shock-related fields)
-# -----------------------------
 @dataclass
 class SimTask:
     tid: int
@@ -76,15 +69,11 @@ class SimAgentState:
 
 
 class SimAgent:
-    """
-    Simulation-only agent (same as Exp1, but with shock support)
-    """
 
     def __init__(self, profile: SimAgentProfile, rng: random.Random):
         self.p = profile
         self.rng = rng
         self.s = SimAgentState(load=0.0, latency_ms=profile.base_latency_ms, reputation=0.5, available=True)
-        # Exp3: track if agent is shocked
         self._is_shocked = False
         self._shock_type = None
         self._original_p_hard = profile.p_hard
@@ -96,41 +85,27 @@ class SimAgent:
         self.p.p_hard = self._original_p_hard
 
     def apply_shock(self, shock_type: str):
-        """
-        Paper-level shock definitions (Exp3)
-        
-        Shock must be SYSTEM-LEVEL to create meaningful failure and recovery:
-        - Shock A: Hard routing channels severely damaged (A unavailable, E/C degraded)
-        - Shock B: Performance degradation across hard-specialized agents
-        """
+        # 标记已受到shock影响，并保存shock类型
         self._is_shocked = True
         self._shock_type = shock_type
         
         if shock_type == "A_unavailable":
-            # Shock A: System-level failure of hard task routing
+            # A完全不可用，E和C的性能大幅下降，模拟hard任务路由通道的严重故障
             if self.p.agent_id == "A":
-                # Strongest agent goes offline
                 self.s.available = False
             elif self.p.agent_id == "E":
-                # Hard specialist severely degraded
-                self.p.p_hard *= 0.35   # 0.85 -> ~0.30
+                self.p.p_hard *= 0.35  # 从0.85降到约0.30
             elif self.p.agent_id == "C":
-                # Medium agent partially degraded
-                self.p.p_hard *= 0.70   # 0.65 -> ~0.45
-            # B and D remain unchanged (as fallback options)
+                self.p.p_hard *= 0.70  # 从0.65降到约0.45
             
         elif shock_type == "A_degraded":
-            # Shock B: Performance degradation (more gradual but still system-level)
+            # A性能显著下降但仍可用，E和C也有一定程度的性能下降
             if self.p.agent_id == "A":
-                # Strongest agent performance drops significantly
-                self.p.p_hard = 0.25    # 0.99 -> 0.25
+                self.p.p_hard = 0.25  # 从0.99降到0.25
             elif self.p.agent_id == "E":
-                # Hard specialist moderately degraded
-                self.p.p_hard *= 0.55   # 0.85 -> ~0.47
+                self.p.p_hard *= 0.55  # 从0.85降到约0.47
             elif self.p.agent_id == "C":
-                # Medium agent slightly degraded
-                self.p.p_hard *= 0.80   # 0.65 -> ~0.52
-            # B and D remain unchanged
+                self.p.p_hard *= 0.80  # 从0.65降到约0.52
 
     def match_score(self, requirement: str) -> float:
         if requirement == "simple":
@@ -178,9 +153,6 @@ class SimAgent:
         return ok, lat
 
 
-# -----------------------------
-# 2) Policies / Evaluation (Exp3 specific)
-# -----------------------------
 @dataclass
 class StepLog:
     t: int
@@ -300,37 +272,25 @@ def calculate_recovery_time_strict(
     sustain_window: int = 50,
 ) -> int:
     """
-    Paper-grade recovery definition (Exp3).
+    计算恢复时间，需要满足三个条件才算真正恢复：
+    1. shock后确实有显著的性能下降（≥ min_drop）
+    2. 性能恢复到shock前基线的 recovery_ratio 以上
+    3. 恢复状态需要持续 sustain_window 步
     
-    Recovery happens iff ALL conditions are met:
-    1. There is a significant performance drop after shock (≥ min_drop)
-    2. Performance later recovers to ≥ recovery_ratio * pre-shock baseline
-    3. Recovery is sustained for sustain_window consecutive steps
+    这样可以避免把那些从未下降的策略（如random）误判为恢复，
+    也能确保恢复是稳定的，而不是偶然的峰值。
     
-    This definition ensures:
-    - No "fake recovery" for policies that never dropped (static_rule/random)
-    - Only adaptive policies (linucb) can achieve recovery
-    - Recovery must be stable, not just a single spike
-    
-    Args:
-        rolling_success: Rolling success rate history
-        shock_point: Task index where shock occurs
-        min_drop: Minimum drop required to consider "real degradation" (default: 0.08 = 8%)
-        recovery_ratio: Recovery target as fraction of pre-shock baseline (default: 0.9 = 90%)
-        sustain_window: Number of consecutive steps required for sustained recovery (default: 50)
-    
-    Returns:
-        recovery_time (steps), or -1 if not recovered
+    返回恢复时间（步数），如果未恢复则返回-1
     """
     n = len(rolling_success)
+    # 需要足够的数据来计算baseline和观察恢复
     if shock_point < 200 or shock_point + sustain_window >= n:
         return -1
     
-    # Pre-shock baseline (average of last 200 steps before shock)
+    # 计算shock前的baseline（用shock前200步的平均值）
     baseline = sum(rolling_success[shock_point - 200: shock_point]) / 200
     
-    # Must observe a real drop after shock
-    # Check minimum value in first 100 steps after shock
+    # 检查shock后100步内的最低性能
     post_shock_window = rolling_success[shock_point: min(shock_point + 100, n)]
     if not post_shock_window:
         return -1
@@ -338,24 +298,22 @@ def calculate_recovery_time_strict(
     post_min = min(post_shock_window)
     actual_drop = baseline - post_min
     
-    # Condition 1: Must have significant drop
+    # 如果没有显著的性能下降，就不算真正受损，自然也谈不上恢复
     if actual_drop < min_drop:
-        return -1  # No real degradation → no recovery concept
+        return -1
     
-    # Condition 2 & 3: Look for sustained recovery
+    # 恢复的目标值：baseline的recovery_ratio倍
     target = baseline * recovery_ratio
-    
-    # Find first point where recovery is sustained
+    # 从shock点开始向后滑动窗口，寻找第一个满足持续恢复的点
     for t in range(shock_point, n - sustain_window + 1):
         window = rolling_success[t: t + sustain_window]
         if len(window) < sustain_window:
             continue
-        
-        # All values in window must be ≥ target
+        # 窗口内所有值都要达到target才算持续恢复
         if all(x >= target for x in window):
             return t - shock_point
     
-    return -1  # Not recovered
+    return -1
 
 
 def reward_shaping(
@@ -397,11 +355,11 @@ def run_policy_exp3(
     """
     rng = random.Random(seed_for_policy)
 
-    # Reset agents
+    # 重置所有agent的状态
     for ag in agents:
         ag.reset()
 
-    # Selector only for LinUCB policy
+    # 只有LinUCB策略需要selector
     selector: Optional[GlobalLinUCB] = None
     if policy_name == "linucb":
         selector = GlobalLinUCB(d=6, l2=float(linucb_l2), alpha=float(linucb_alpha), delta=float(delta), S=float(S))
@@ -421,21 +379,17 @@ def run_policy_exp3(
     strong_agent_id = "A"
 
     for t, task in enumerate(tasks):
-        # Apply shock at shock_point (system-level: affects multiple agents)
+        # 在shock_point时刻对所有相关agent应用shock
         if t == shock_point:
-            # Apply shock to all relevant agents (system-level shock)
             for ag in agents:
                 ag.apply_shock(shock_type)
 
-        # Decay load for all agents
+        # 所有agent的负载都会随时间衰减
         for ag in agents:
             ag.decay_load()
 
-        # Paper-correct: Filter agent pool BEFORE Top-L selection
-        # This ensures Shock A (unavailable) truly removes agents from candidate set
+        # 只考虑当前可用的agent作为候选（shock后A可能变为不可用）
         candidate_agents = [ag for ag in agents if ag.get_dynamic_state().get("available", True)]
-        
-        # If no agents available after shock → system-level failure
         if not candidate_agents:
             success_history.append(0)
             step_logs.append(
@@ -456,22 +410,20 @@ def run_policy_exp3(
             )
             continue
 
-        # Top-L candidates (from available agents only)
+        # 从候选agent中选出Top-L，然后根据策略选择具体使用哪个
         top = pick_topL_candidates(candidate_agents, task.requirement, topL=topL)
-        avail = [(ag, ms) for (ag, ms) in top]  # All in top are already available
-
-        # Choose action
+        avail = [(ag, ms) for (ag, ms) in top]
         chosen_ag: SimAgent
         chosen_ms: float
         chosen_x: Optional[List[float]] = None
 
         if policy_name == "static_rule":
+            # 静态规则：simple任务用B，hard任务用A（不根据实际情况调整）
             chosen_id = "B" if task.difficulty == "simple" else "A"
             chosen_ag = agent_by_id.get(chosen_id, agent_by_id[strong_agent_id])
-            # Check if chosen agent is available (respects Shock A)
-            # Note: static_rule is a baseline that doesn't adapt, so it may fail in Shock A
+            # 检查选中的agent是否可用（如果A在Shock A中不可用，这里会失败，符合预期）
             if not chosen_ag.get_dynamic_state().get("available", True):
-                # Agent unavailable → system failure (expected for non-adaptive baseline)
+                # agent不可用导致任务失败（非自适应baseline的预期行为）
                 success_history.append(0)
                 step_logs.append(
                     StepLog(
@@ -493,13 +445,16 @@ def run_policy_exp3(
             chosen_ms = chosen_ag.match_score(task.requirement)
 
         elif policy_name == "random":
+            # 随机选择（也是baseline之一）
             chosen_ag, chosen_ms = rng.choice(avail)
 
         elif policy_name in ["linucb", "linucb_frozen"]:
+            # LinUCB策略：构建特征向量并让selector选择
             assert selector is not None
             candidates: List[Tuple[str, List[float], float]] = []
             for (ag, ms) in avail:
                 st = ag.get_dynamic_state()
+                # 构建6维特征向量（match_score + load + latency + reputation + available + cost相关）
                 x = build_x(
                     match_score=float(ms),
                     dynamic_state={
@@ -522,20 +477,20 @@ def run_policy_exp3(
 
         agent_id = chosen_ag.p.agent_id
         choose_counts[agent_id] = choose_counts.get(agent_id, 0) + 1
-        # Track pre/post shock selection
+        # 分别统计shock前后的agent选择情况，用于分析策略的适应行为
         if t < shock_point:
             choose_counts_pre[agent_id] = choose_counts_pre.get(agent_id, 0) + 1
         else:
             choose_counts_post[agent_id] = choose_counts_post.get(agent_id, 0) + 1
 
-        # Execute
+        # 执行任务
         ok, lat_ms = chosen_ag.execute(task)
         call_cost = chosen_ag.p.call_cost
         total_cost += call_cost
         total_latency += lat_ms
         success_history.append(1 if ok else 0)
 
-        # LinUCB update (skip if frozen after shock)
+        # LinUCB的参数更新（如果设置了freeze_after_shock，shock后就不再更新）
         used_reward = 0.0
         if policy_name in ["linucb", "linucb_frozen"]:
             assert selector is not None
@@ -607,7 +562,7 @@ def run_policy_exp3(
     
     overall_rate = sum(success_history) / max(1, n)
     
-    # Recovery time (using strict paper-grade definition)
+            # 计算恢复时间（使用严格的恢复定义）
     rolling_success_list = calculate_rolling_success(success_history, window_size=50)
     recovery_time = calculate_recovery_time_strict(
         rolling_success_list,
@@ -915,7 +870,6 @@ def print_exp3_summary_terminal(
     shock_type: str,
     shock_point: int,
 ):
-    """Print comprehensive Exp3 summary in terminal"""
     print("\n" + "=" * 90)
     print(f"📊 Exp3 Robustness Summary")
     print(f"Shock Type : {shock_type}")
@@ -958,7 +912,6 @@ def print_exp3_summary_terminal(
 
 
 def write_excel(outdir: str, summary: List[SummaryRow], traj: Dict[str, List[StepLog]]) -> None:
-    """Write results to Excel file with multiple sheets"""
     try:
         import pandas as pd
     except ImportError:
@@ -969,11 +922,9 @@ def write_excel(outdir: str, summary: List[SummaryRow], traj: Dict[str, List[Ste
     
     try:
         with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-            # Summary sheet with detailed metrics
             summary_data = []
             for r in summary:
                 row_dict = asdict(r)
-                # Add additional computed metrics
                 row_dict['recovery_status'] = 'Recovered' if r.recovery_time >= 0 else 'Not Recovered'
                 row_dict['success_rate_drop'] = r.success_rate_pre_shock - r.success_rate_post_shock
                 row_dict['recovery_efficiency'] = r.recovery_time if r.recovery_time >= 0 else None
@@ -982,14 +933,12 @@ def write_excel(outdir: str, summary: List[SummaryRow], traj: Dict[str, List[Ste
             summary_df = pd.DataFrame(summary_data)
             summary_df.to_excel(writer, sheet_name='Summary', index=False)
             
-            # Trajectory sheets (one per policy)
             for policy, logs in traj.items():
                 if logs:
                     traj_df = pd.DataFrame([asdict(log) for log in logs])
-                    sheet_name = f'Trajectory_{policy}'[:31]  # Excel sheet name limit
+                    sheet_name = f'Trajectory_{policy}'[:31]
                     traj_df.to_excel(writer, sheet_name=sheet_name, index=False)
             
-            # Additional analysis sheet: Recovery statistics
             recovery_stats = []
             for r in summary:
                 recovery_stats.append({
@@ -1005,7 +954,6 @@ def write_excel(outdir: str, summary: List[SummaryRow], traj: Dict[str, List[Ste
             recovery_df = pd.DataFrame(recovery_stats)
             recovery_df.to_excel(writer, sheet_name='Recovery_Stats', index=False)
             
-            # Agent selection distribution sheet (overall)
             agent_selection = []
             for r in summary:
                 total_selections = r.choose_A + r.choose_B + r.choose_C + r.choose_D + r.choose_E
@@ -1092,7 +1040,7 @@ def main():
     ap.add_argument("--freeze-after-shock", action="store_true",
                     help="Freeze LinUCB updates after shock (for ablation)")
 
-    # LinUCB params
+    # LinUCB参数配置
     ap.add_argument("--alpha", type=float, default=1.0, help="LinUCB exploration scale")
     ap.add_argument("--l2", type=float, default=1.0, help="LinUCB l2 regularization lambda")
     ap.add_argument("--delta", type=float, default=0.05, help="LinUCB confidence")
@@ -1179,7 +1127,7 @@ def main():
         return [SimAgent(p, rng) for p in profiles]
 
     # Policies for Exp3
-    # Always include linucb_frozen as baseline (critical for paper)
+    # 始终包含linucb_frozen作为baseline（shock后不再更新参数，用于对比）
     policies = ["static_rule", "random", "linucb", "linucb_frozen"]
 
     summary_rows: List[SummaryRow] = []
@@ -1260,14 +1208,14 @@ def main():
             if os.path.exists(plot_path):
                 print(f"  ✓ {plot_file}")
 
-    # Print comprehensive terminal summary
+    # 打印终端输出
     print_exp3_summary_terminal(
         summary_rows,
         shock_type=args.shock,
         shock_point=shock_point,
     )
     
-    # Print agent usage for key policies (linucb and linucb_frozen)
+    # 打印关键策略的agent使用情况（用于分析策略的适应行为）
     for pol, logs in traj_logs.items():
         if pol in ("linucb", "linucb_frozen"):
             print_agent_usage_terminal(

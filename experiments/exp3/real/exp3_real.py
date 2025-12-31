@@ -2,15 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-experiments/exp3/real/exp3_real.py
-
-Exp3 (REAL): Robustness to Role Shock under real model / API execution
-
-Key differences from sim:
-- Real prompts instead of simulated tasks
-- Real latency measurement
-- Real success judged by heuristic / verifier
-- Same selector, same metrics, same output schema
+Exp3 real execution: robustness to role shock with real LLM/API calls
 """
 
 from __future__ import annotations
@@ -26,7 +18,6 @@ from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
-# ---- project root import ----
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "../../../"))
 import sys
@@ -36,9 +27,6 @@ if _PROJECT_ROOT not in sys.path:
 from core.linucb_selector import GlobalLinUCB, build_x
 
 
-# -----------------------------
-# 1. Task / Agent abstraction
-# -----------------------------
 @dataclass
 class RealTask:
     tid: int
@@ -56,10 +44,6 @@ class RealAgentProfile:
 
 
 class RealAgent:
-    """
-    Real agent wrapper (API / local model)
-    For placeholder mode, simulates success probability like SimAgent
-    """
 
     def __init__(self, profile: RealAgentProfile, rng: random.Random):
         self.p = profile
@@ -70,82 +54,60 @@ class RealAgent:
         self._original_p_hard = profile.p_hard
 
     def apply_shock(self, shock_type: str):
-        """
-        Apply shock (same logic as SimAgent for consistency)
-        """
+        # 应用shock：修改agent的可用性或性能概率，与sim版本保持一致
         if shock_type == "A_unavailable":
+            # A变为不可用，C的性能下降
             if self.p.agent_id == "A":
                 self.available = False
-            # Note: In real version with only 3 agents (A, B, C),
-            # we don't degrade C like sim version does with E/C
-            # For consistency with sim, we can degrade C if needed
             elif self.p.agent_id == "C":
-                self.p.p_hard *= 0.70  # Similar to sim's C degradation
+                self.p.p_hard *= 0.70
             
         elif shock_type == "A_degraded":
+            # A的性能大幅下降（从0.99降到0.25），C也有一定下降
             if self.p.agent_id == "A":
-                self.p.p_hard = 0.25  # Same as sim: 0.99 -> 0.25
+                self.p.p_hard = 0.25
             elif self.p.agent_id == "C":
-                self.p.p_hard *= 0.80  # Similar to sim's C degradation
+                self.p.p_hard *= 0.80
 
     def _success_prob(self, difficulty: str) -> float:
-        """Calculate success probability based on difficulty"""
+        # 根据任务难度返回对应的成功概率
         base = self.p.p_simple if difficulty == "simple" else self.p.p_hard
         return max(0.0, min(1.0, base))
 
     def execute(self, prompt: str, difficulty: str) -> Tuple[str, float, bool]:
-        """
-        Execute task and return (response, latency, success).
-        
-        In placeholder mode, success is probabilistic based on agent capability.
-        Replace this with real LLM calls when needed.
-        """
+        # 目前是placeholder实现：生成模拟响应并测量延迟
         start = time.time()
-
-        # ---- dummy placeholder ----
         response = f"[{self.p.model_name}] response to: {prompt[:50]}"
-
         latency = (time.time() - start) * 1000.0
+        # 使用指数移动平均更新延迟估计
         self.latency_ms = 0.8 * self.latency_ms + 0.2 * latency
 
-        # Simulate success based on probability (like SimAgent)
+        # 根据agent的成功概率随机决定本次执行是否成功
         p = self._success_prob(difficulty)
         ok = (self.rng.random() < p)
-        
-        # Update reputation based on success
+        # 用成功结果更新reputation（也是指数移动平均）
         self.reputation = max(0.0, min(1.0, 0.95 * self.reputation + 0.05 * (1.0 if ok else 0.0)))
 
         return response, latency, ok
 
 
-# -----------------------------
-# 2. Task loading
-# -----------------------------
 def _extract_prompt_from_raw_data(raw_data: dict, benchmark: str) -> str:
-    """Extract prompt from raw_data based on benchmark type"""
-    # Different benchmarks use different field names
+    # 不同benchmark的prompt字段名不同，需要根据benchmark类型提取
     if benchmark == "humaneval":
         return raw_data.get("prompt", "")
     elif benchmark == "gsm8k":
         return raw_data.get("question", "")
     elif benchmark in ["bbh", "amc", "medical_qa"]:
-        # Try common field names in order
+        # 这些benchmark可能用input/question/problem等字段名，按优先级尝试
         return raw_data.get("input", "") or raw_data.get("question", "") or raw_data.get("problem", "")
     else:
-        # Fallback: try common field names
+        # 默认尝试常见字段名
         return raw_data.get("prompt", "") or raw_data.get("question", "") or raw_data.get("input", "")
 
 
 def load_tasks(path: str, n: int) -> List[RealTask]:
-    """
-    Load tasks from symphony-data-generator JSONL file.
-    
-    REQUIRED format (from symphony-data-generator):
-    {"benchmark": "...", "difficulty_bin": "easy"|"hard", "raw_data": {...}}
-    
-    This function ONLY supports the data generator format to ensure real experiments
-    use real benchmark data (HumanEval, GSM8K, BBH, AMC, Medical QA).
-    """
+    # 从symphony-data-generator生成的JSONL文件加载任务
+    # 要求文件格式必须包含raw_data字段，确保使用的是真实的benchmark数据
     tasks = []
     with open(path, "r", encoding="utf-8") as f:
         for i, line in enumerate(f):
@@ -153,16 +115,14 @@ def load_tasks(path: str, n: int) -> List[RealTask]:
                 break
             obj = json.loads(line)
             
-            # REQUIRED: Must have "raw_data" field (data generator format)
             if "raw_data" not in obj:
                 raise ValueError(
-                    f"Task {i} in {path} is missing 'raw_data' field. "
-                    "Real experiments MUST use symphony-data-generator format. "
-                    "Expected format: {{\"benchmark\": \"...\", \"difficulty_bin\": \"easy\"|\"hard\", \"raw_data\": {{...}}}}. "
-                    "Generate tasks using: cd symphony-data-generator && python src/quick_start.py"
+                    f"Task {i} missing 'raw_data' field. "
+                    "Use symphony-data-generator format. "
+                    "Run: cd symphony-data-generator && python src/quick_start.py"
                 )
             
-            # Extract from data generator format
+            # 从raw_data中提取prompt，根据benchmark类型选择对应的字段
             raw_data = obj.get("raw_data", {})
             benchmark = obj.get("benchmark", "")
             prompt = _extract_prompt_from_raw_data(raw_data, benchmark)
@@ -171,7 +131,7 @@ def load_tasks(path: str, n: int) -> List[RealTask]:
                 print(f"[WARN] Task {i} (benchmark={benchmark}) has no extractable prompt, skipping")
                 continue
             
-            # Map difficulty_bin ("easy"/"hard") to ("simple"/"hard")
+            # 将difficulty_bin (easy/hard) 映射到 (simple/hard)
             difficulty_bin = obj.get("difficulty_bin", "hard")
             if difficulty_bin not in ["easy", "hard"]:
                 raise ValueError(
@@ -182,7 +142,7 @@ def load_tasks(path: str, n: int) -> List[RealTask]:
             
             tasks.append(
                 RealTask(
-                    tid=len(tasks),  # Use actual index after filtering
+                    tid=len(tasks),
                     prompt=prompt,
                     difficulty=difficulty,
                 )
@@ -198,9 +158,6 @@ def load_tasks(path: str, n: int) -> List[RealTask]:
     return tasks
 
 
-# -----------------------------
-# 3. Data structures for logging
-# -----------------------------
 @dataclass
 class StepLog:
     t: int
@@ -247,15 +204,11 @@ class SummaryRow:
     choose_E_post: int
 
 
-# -----------------------------
-# 4. Utility functions
-# -----------------------------
 def print_exp3_summary_terminal(
     summary_row: SummaryRow,
     shock_type: str,
     shock_point: int,
 ):
-    """Print comprehensive Exp3 summary in terminal"""
     print("\n" + "=" * 90)
     print(f"📊 Exp3 Real Execution Summary")
     print(f"Shock Type : {shock_type}")
@@ -294,7 +247,6 @@ def print_exp3_summary_terminal(
 
 
 def calculate_rolling_success(success_history: List[int], window_size: int = 50) -> List[float]:
-    """Calculate rolling success rate"""
     rolling = []
     window = []
     for s in success_history:
@@ -313,12 +265,23 @@ def calculate_recovery_time_strict(
     recovery_ratio: float = 0.9,
     sustain_window: int = 50,
 ) -> int:
-    """Paper-grade recovery definition"""
+    """
+    计算恢复时间，需要满足三个条件才算恢复：
+    1. shock后确实有显著的性能下降（≥ min_drop）
+    2. 性能恢复到shock前基线的 recovery_ratio 以上
+    3. 恢复状态需要持续 sustain_window 步
+    
+    返回恢复时间（步数），如果未恢复则返回-1
+    """
     n = len(rolling_success)
+    # 需要足够的数据来计算baseline和观察恢复
     if shock_point < 200 or shock_point + sustain_window >= n:
         return -1
     
+    # 计算shock前的baseline（用shock前200步的平均值）
     baseline = sum(rolling_success[shock_point - 200: shock_point]) / 200
+    
+    # 检查shock后100步内的最低性能
     post_shock_window = rolling_success[shock_point: min(shock_point + 100, n)]
     if not post_shock_window:
         return -1
@@ -326,14 +289,18 @@ def calculate_recovery_time_strict(
     post_min = min(post_shock_window)
     actual_drop = baseline - post_min
     
+    # 如果没有显著的性能下降，就不算真正受损，自然也谈不上恢复
     if actual_drop < min_drop:
         return -1
     
+    # 恢复的目标值：baseline的recovery_ratio倍
     target = baseline * recovery_ratio
+    # 从shock点开始向后滑动窗口，寻找第一个满足持续恢复的点
     for t in range(shock_point, n - sustain_window + 1):
         window = rolling_success[t: t + sustain_window]
         if len(window) < sustain_window:
             continue
+        # 窗口内所有值都要达到target才算持续恢复
         if all(x >= target for x in window):
             return t - shock_point
     
@@ -353,7 +320,6 @@ def write_csv(path: str, rows: List[dict]) -> None:
 
 
 def write_excel(outdir: str, summary: List[SummaryRow], traj: Dict[str, List[StepLog]]) -> None:
-    """Write results to Excel file"""
     try:
         import pandas as pd
     except ImportError:
@@ -364,7 +330,6 @@ def write_excel(outdir: str, summary: List[SummaryRow], traj: Dict[str, List[Ste
     
     try:
         with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-            # Summary sheet
             summary_data = []
             for r in summary:
                 row_dict = asdict(r)
@@ -376,7 +341,6 @@ def write_excel(outdir: str, summary: List[SummaryRow], traj: Dict[str, List[Ste
             summary_df = pd.DataFrame(summary_data)
             summary_df.to_excel(writer, sheet_name='Summary', index=False)
             
-            # Trajectory sheet
             for policy, logs in traj.items():
                 if logs:
                     traj_df = pd.DataFrame([asdict(log) for log in logs])
@@ -394,7 +358,6 @@ def write_excel(outdir: str, summary: List[SummaryRow], traj: Dict[str, List[Ste
 
 
 def try_plot(outdir: str, summary: List[SummaryRow], traj: Dict[str, List[StepLog]]) -> None:
-    """Generate plots"""
     try:
         import matplotlib
         matplotlib.use('Agg')
@@ -408,7 +371,6 @@ def try_plot(outdir: str, summary: List[SummaryRow], traj: Dict[str, List[StepLo
             logs = traj["linucb"]
             shock_point = summary[0].shock_point if summary else 500
             
-            # V-shape recovery curve
             fig = plt.figure(figsize=(12, 6), dpi=180, constrained_layout=True)
             ax = fig.add_subplot(111)
             
@@ -418,7 +380,6 @@ def try_plot(outdir: str, summary: List[SummaryRow], traj: Dict[str, List[StepLo
             ax.plot(task_indices, rolling_success, linewidth=2, label="LinUCB (Ours)")
             ax.axvline(x=shock_point, color="red", linestyle="--", linewidth=2, label=f"Shock Point (t={shock_point})")
             
-            # Mark recovery point
             for row in summary:
                 if row.policy == "linucb" and row.recovery_time >= 0:
                     recovery_point = shock_point + row.recovery_time
@@ -434,7 +395,6 @@ def try_plot(outdir: str, summary: List[SummaryRow], traj: Dict[str, List[StepLo
             fig.savefig(os.path.join(outdir, "plot_v_shape_recovery.png"))
             plt.close(fig)
             
-            # Single policy comparison (simplified version of all policies plot)
             fig3 = plt.figure(figsize=(14, 7), dpi=180, constrained_layout=True)
             ax3 = fig3.add_subplot(111)
             
@@ -460,23 +420,20 @@ def try_plot(outdir: str, summary: List[SummaryRow], traj: Dict[str, List[StepLo
             fig3.savefig(os.path.join(outdir, "plot_v_shape_all_policies.png"))
             plt.close(fig3)
             
-            # Recovery time comparison (simplified - single bar)
             fig2 = plt.figure(figsize=(10, 6), dpi=180, constrained_layout=True)
             ax2 = fig2.add_subplot(111)
             
             r = summary[0]
             if r.recovery_time >= 0:
-                # Recovered: show actual recovery time
                 recovery_time = r.recovery_time
-                color = '#2ecc71'  # Green
+                color = '#2ecc71'
                 label_text = str(r.recovery_time)
                 label_color = 'black'
                 y_max = max(recovery_time, 100)
                 bars = ax2.bar([0], [recovery_time], color=color, alpha=0.8, width=0.6)
             else:
-                # Not recovered: show "N/A" with a small placeholder bar
-                recovery_time = 50  # Small placeholder value for visualization
-                color = '#e74c3c'  # Red
+                recovery_time = 50
+                color = '#e74c3c'
                 label_text = "N/A"
                 label_color = 'red'
                 y_max = 150
@@ -500,27 +457,13 @@ def try_plot(outdir: str, summary: List[SummaryRow], traj: Dict[str, List[StepLo
         traceback.print_exc()
 
 
-# -----------------------------
-# 5. Success verifier (for real LLM execution mode)
-# -----------------------------
 def verify_success(task: RealTask, response: str) -> bool:
-    """
-    Paper-acceptable heuristic verifier for REAL LLM responses:
-    - keyword check
-    - regex
-    - or LLM-as-judge (future)
-    
-    Note: In placeholder mode, success is determined by agent.execute()
-    based on probability. This function is kept for future real LLM integration.
-    """
+    # 简单的启发式验证：根据响应长度判断（目前placeholder模式下不使用，成功与否由agent.execute决定）
     if task.difficulty == "simple":
         return len(response) > 20
     return len(response) > 50
 
 
-# -----------------------------
-# 4. Main experiment loop
-# -----------------------------
 def main():
     ap = argparse.ArgumentParser("Exp3 REAL")
     ap.add_argument("--tasks", type=str, required=True)
@@ -538,24 +481,24 @@ def main():
 
     shock_point = args.shock_point or args.n // 2
 
-    # Agents (with success probabilities matching sim version)
     agents = {
         "A": RealAgent(RealAgentProfile("A", "gpt-4", 1.0, p_simple=0.99, p_hard=0.99), rng),
         "B": RealAgent(RealAgentProfile("B", "gpt-3.5", 0.1, p_simple=0.88, p_hard=0.18), rng),
         "C": RealAgent(RealAgentProfile("C", "mixtral", 0.3, p_simple=0.92, p_hard=0.65), rng),
     }
 
+    # 初始化LinUCB selector（6维特征向量）
     selector = GlobalLinUCB(d=6, l2=1.0, alpha=1.0, delta=0.05, S=1.0)
 
     tasks = load_tasks(args.tasks, args.n)
 
-    # Create output directory
+    # 创建输出目录（按shock类型和时间戳组织）
     shock_type_short = "ShockA" if args.shock == "A_unavailable" else "ShockB"
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     outdir = os.path.join(args.outdir, shock_type_short, ts)
     os.makedirs(outdir, exist_ok=True)
 
-    step_logs: List[StepLog] = []
+    step_logs = []
     success_hist: List[int] = []
     choose_counts = {"A": 0, "B": 0, "C": 0, "D": 0, "E": 0}
     choose_counts_pre = {"A": 0, "B": 0, "C": 0, "D": 0, "E": 0}
@@ -563,15 +506,16 @@ def main():
     total_latency = 0.0
 
     for t, task in enumerate(tasks):
+        # 在shock_point时刻应用shock
         if t == shock_point:
             for ag in agents.values():
                 ag.apply_shock(args.shock)
 
-        # available agents
+        # 只考虑当前可用的agent（shock后A可能不可用）
         candidates = [ag for ag in agents.values() if ag.available]
 
+        # 如果没有可用的agent，任务失败
         if not candidates:
-            # No agents available
             success_hist.append(0)
             step_logs.append(StepLog(
                 t=t,
@@ -604,14 +548,17 @@ def main():
             )
             xs.append((ag.p.agent_id, x))
 
+        # LinUCB选择最优agent
         chosen_id = selector.select(xs)
         agent = agents[chosen_id]
+        # match_score用于构建特征向量（这里简化处理，A的match更高）
         match_score = 0.8 if chosen_id == "A" else 0.6
 
-        # Execute and get success status
+        # 执行任务，返回响应、延迟和是否成功
         resp, latency, ok = agent.execute(task.prompt, task.difficulty)
         reward = 1.0 if ok else 0.0
 
+        # 用执行结果更新LinUCB的参数（基于选择的agent的特征向量和reward）
         chosen_x = next(x for aid, x in xs if aid == chosen_id)
         selector.update(chosen_x, reward)
 
@@ -623,7 +570,7 @@ def main():
             choose_counts_post[chosen_id] = choose_counts_post.get(chosen_id, 0) + 1
         total_latency += latency
 
-        # Calculate rolling success
+        # 计算滚动窗口的成功率（用于绘制V-shape曲线）
         rolling_success_list = calculate_rolling_success(success_hist, window_size=50)
         current_rolling = rolling_success_list[-1] if rolling_success_list else 0.0
 
@@ -642,7 +589,6 @@ def main():
             reward_used_for_update=reward,
         ))
 
-    # Calculate metrics
     n = len(tasks)
     avg_latency = total_latency / max(1, n)
     p_hard = sum(1 for t in tasks if t.difficulty == "hard") / max(1, n)
@@ -656,7 +602,7 @@ def main():
     
     overall_rate = sum(success_hist) / max(1, n)
     
-    # Recovery time
+    # 计算滚动成功率用于恢复时间计算
     rolling_success_list = calculate_rolling_success(success_hist, window_size=50)
     recovery_time = calculate_recovery_time_strict(
         rolling_success_list,
@@ -666,7 +612,7 @@ def main():
         sustain_window=50,
     )
     
-    # Deadlock rate
+    # 统计死锁情况（所有agent都不可用导致无法选择）
     deadlock_count = 0
     if shock_point < n:
         consecutive_failures = 0
@@ -680,7 +626,6 @@ def main():
                 consecutive_failures = 0
     deadlock_rate = deadlock_count / max(1, post_shock_count)
 
-    # Create summary
     summary_row = SummaryRow(
         policy="linucb",
         n=n,
@@ -710,25 +655,20 @@ def main():
         choose_E_post=0,
     )
 
-    # Print summary to terminal
     print_exp3_summary_terminal(summary_row, args.shock, shock_point)
     
-    # Write outputs
     print(f"\n[OUTPUT] Writing results to: {outdir}")
     
-    # Summary CSV
     summary_dict = asdict(summary_row)
     summary_dict['recovery_status'] = 'Recovered' if summary_row.recovery_time >= 0 else 'Not Recovered'
     summary_dict['success_rate_drop'] = summary_row.success_rate_pre_shock - summary_row.success_rate_post_shock
     write_csv(os.path.join(outdir, "summary.csv"), [summary_dict])
     print(f"  ✓ summary.csv")
     
-    # Trajectory CSV
     traj_dicts = [asdict(log) for log in step_logs]
     write_csv(os.path.join(outdir, "trajectory_linucb.csv"), traj_dicts)
     print(f"  ✓ trajectory_linucb.csv")
     
-    # Also save JSON (for backward compatibility)
     json_logs = [
         {
             "t": log.t,
@@ -743,14 +683,12 @@ def main():
         json.dump(json_logs, f, indent=2)
     print(f"  ✓ trajectory_real.json")
 
-    # Excel
     if not args.no_excel:
         write_excel(outdir, [summary_row], {"linucb": step_logs})
         excel_path = os.path.join(outdir, "exp3_results.xlsx")
         if os.path.exists(excel_path):
             print(f"  ✓ exp3_results.xlsx")
 
-    # Plots
     if not args.no_plots:
         try_plot(outdir, [summary_row], {"linucb": step_logs})
         plot_files = [
