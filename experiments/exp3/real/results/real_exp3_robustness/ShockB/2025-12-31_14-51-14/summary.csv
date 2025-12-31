@@ -1,0 +1,2 @@
+policy,n,p_hard,shock_type,shock_point,success_rate_pre_shock,success_rate_post_shock,success_rate_overall,recovery_time,deadlock_rate,avg_latency_ms,choose_A,choose_B,choose_C,choose_D,choose_E,choose_A_pre,choose_B_pre,choose_C_pre,choose_D_pre,choose_E_pre,choose_A_post,choose_B_post,choose_C_post,choose_D_post,choose_E_post,recovery_status,success_rate_drop
+linucb,500,0.5,A_degraded,500,0.912,0.0,0.912,-1,0.0,0.0003466606140136719,415,78,7,0,0,415,78,7,0,0,0,0,0,0,0,Not Recovered,0.912

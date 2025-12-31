@@ -1,0 +1,5 @@
+policy,n,p_hard,shock_type,shock_point,success_rate_pre_shock,success_rate_post_shock,success_rate_overall,recovery_time,deadlock_rate,avg_latency_ms,choose_A,choose_B,choose_C,choose_D,choose_E,choose_A_pre,choose_B_pre,choose_C_pre,choose_D_pre,choose_E_pre,choose_A_post,choose_B_post,choose_C_post,choose_D_post,choose_E_post,recovery_status,success_rate_drop
+static_rule,1000,0.178,A_degraded,500,0.876,0.75,0.813,300,0.01,812.3135827599586,178,822,0,0,0,89,411,0,0,0,89,411,0,0,0,Recovered,0.126
+random,1000,0.178,A_degraded,500,0.826,0.82,0.823,-1,0.0,999.6551124462329,365,268,54,261,52,176,133,30,134,27,189,135,24,127,25,Not Recovered,0.006000000000000005
+linucb,1000,0.178,A_degraded,500,0.788,0.752,0.77,193,0.012,872.7579255204455,199,407,73,258,63,163,192,32,78,35,36,215,41,180,28,Recovered,0.03600000000000003
+linucb_frozen,1000,0.178,A_degraded,500,0.764,0.818,0.791,10,0.008,1316.335453502153,563,173,39,194,31,73,170,39,191,27,490,3,0,3,4,Recovered,-0.05399999999999994
